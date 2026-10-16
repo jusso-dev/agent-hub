@@ -111,8 +111,12 @@ pub async fn search(
     c.get("/artifacts", &query).await
 }
 
-pub async fn get(c: &HubClient, id: &str) -> Result<Value> {
-    c.get(&format!("/artifacts/{}", seg(id)), &[]).await
+pub async fn get(c: &HubClient, id: &str, version: Option<u32>) -> Result<Value> {
+    let q: Vec<(&str, String)> = match version {
+        Some(v) => vec![("version", v.to_string())],
+        None => vec![],
+    };
+    c.get(&format!("/artifacts/{}", seg(id)), &q).await
 }
 
 pub async fn adopt(c: &HubClient, id: &str) -> Result<Value> {

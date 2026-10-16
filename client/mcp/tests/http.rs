@@ -193,3 +193,22 @@ async fn missing_key_is_a_clear_error() {
     let err = ops::adopt(&c, "x").await.unwrap_err().to_string();
     assert!(err.contains("no agent key"), "{err}");
 }
+
+#[tokio::test]
+async fn get_with_version_query() {
+    let srv = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/artifacts/a1"))
+        .and(query_param("version", "2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "artifact": {"id": "a1", "kind": "skill", "name": "x", "version": 3},
+            "version": {"version": 2, "summary": "old", "content": "v2 body", "created_at": "t"}
+        })))
+        .expect(1)
+        .mount(&srv)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    let c = client(&srv.uri(), home.path());
+    let res = ops::get(&c, "a1", Some(2)).await.unwrap();
+    assert_eq!(res["version"]["content"], "v2 body");
+}
