@@ -1,0 +1,73 @@
+{
+  "memories": [
+    {
+      "name": "deploy-notes",
+      "summary": "Staging uses token ${GITHUB_TOKEN} for the release bot.",
+      "tags": [],
+      "content": "# Deploy notes\n\nStaging uses token ${GITHUB_TOKEN} for the release bot.\nOpenAI key for evals: ${OPENAI_API_KEY}\npassword: ${PASSWORD}\nAlerts go to ${SLACK_WEBHOOK_URL}\nDB: postgres://app:${URL_PASSWORD}@db.internal:5432/app\nAWS: ${AWS_ACCESS_KEY_ID}\nHub key ${HUB_KEY} must never leave the box.\nRisk-based task-scheduling is fine to mention.\n"
+    },
+    {
+      "name": "rust-tips",
+      "summary": "Small Rust habits that keep clippy quiet",
+      "tags": [
+        "clippy",
+        "rust"
+      ],
+      "content": "---\ndescription: Small Rust habits that keep clippy quiet\ntags: [rust, clippy]\n---\n# Rust tips\n\n- Prefer `?` over `unwrap()` outside tests.\n- Run `cargo clippy -- -D warnings` before every push.\n"
+    }
+  ],
+  "skills": [
+    {
+      "name": "plain",
+      "summary": "No front matter here. The first line of prose is the summary.",
+      "tags": [],
+      "content": "# Plain skill\n\nNo front matter here. The first line of prose is the summary.\n"
+    },
+    {
+      "name": "sqlx-migrations",
+      "summary": "Write and test SQLite migrations with sqlx without breaking existing rows.",
+      "tags": [
+        "rust",
+        "sqlite",
+        "sqlx"
+      ],
+      "content": "---\nname: sqlx-migrations\ndescription: >-\n  Write and test SQLite migrations with sqlx\n  without breaking existing rows.\ntags:\n  - rust\n  - sqlx\n  - sqlite\n---\n# sqlx migrations\n\n1. Add `migrations/NNNN_name.sql`.\n2. Run `sqlx migrate run` against a scratch DB.\n3. Never edit a migration that has shipped.\n"
+    }
+  ],
+  "mcps": [
+    {
+      "name": "github",
+      "summary": "GitHub issues and PRs",
+      "tags": [
+        "github",
+        "mcp",
+        "rust"
+      ],
+      "content": "{\"command\":\"npx\",\"args\":[\"-y\",\"@modelcontextprotocol/server-github\"],\"env\":{\"GITHUB_PERSONAL_ACCESS_TOKEN\":\"${GITHUB_PERSONAL_ACCESS_TOKEN}\",\"LOG_LEVEL\":\"info\"}}"
+    },
+    {
+      "name": "slack",
+      "summary": "stdio: slack-mcp --token ${SLACK_TOKEN} --workspace=yuma --api-key=${SLACK_API_KEY}",
+      "tags": [
+        "mcp"
+      ],
+      "content": "{\"command\":\"slack-mcp\",\"args\":[\"--token\",\"${SLACK_TOKEN}\",\"--workspace=yuma\",\"--api-key=${SLACK_API_KEY}\"]}"
+    },
+    {
+      "name": "remote",
+      "summary": "http: https://mcp.example.com/sse",
+      "tags": [
+        "mcp"
+      ],
+      "content": "{\"url\":\"https://mcp.example.com/sse\",\"headers\":{\"Authorization\":\"Bearer ${REMOTE_AUTHORIZATION}\",\"X-Team\":\"eng\"}}"
+    },
+    {
+      "name": "already-clean",
+      "summary": "stdio: hub-mcp",
+      "tags": [
+        "mcp"
+      ],
+      "content": "{\"command\":\"hub-mcp\",\"env\":{\"HUB_URL\":\"http://127.0.0.1:8787\",\"HUB_KEY\":\"${HUB_KEY}\"}}"
+    }
+  ]
+}
