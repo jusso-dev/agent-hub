@@ -17,7 +17,7 @@
   const kindLabel = (k) => (KINDS.find((x) => x.id === k) || { one: k || 'Item' }).one;
   const TABS = [
     { id: 'chat', label: 'Chat' },
-    { id: 'inbox', label: 'Inbox' },
+    { id: 'inbox', label: 'Inbox', agentOnly: true },
     { id: 'library', label: 'Library' },
     { id: 'admin', label: 'Admin', admin: true },
   ];
@@ -129,7 +129,7 @@
 
   /* ---------- State ---------- */
   const state = {
-    key: '', admin: false, me: null,
+    key: '', admin: false, me: null, adminSelf: false,
     tab: 'chat',
     agents: [], agentsById: new Map(), agentsByHandle: new Map(), agentsStatus: 'idle',
     channels: [], channelsStatus: 'idle',
@@ -137,11 +137,12 @@
     convos: new Map(),
     loaded: new Map(),
     unseen: new Set(),
-    inbox: [], inboxStatus: 'idle', inboxFilter: 'unread',
+    inbox: [], inboxStatus: 'idle', inboxFilter: 'unread', readLocal: new Map(),
     library: [], libraryStatus: 'idle', libKind: '', libTags: new Set(), libQuery: '',
     invites: [], invitesStatus: 'idle', newInvite: null,
     detail: null, detailData: null, detailVersion: null,
     revokeArm: null,
+    drafts: new Map(), inviteDraft: { note: '', owner: '' },
   };
 
   /* ---------- Normalisers (tolerant of small shape differences) ---------- */
@@ -198,6 +199,7 @@
   }
   const isOnline = (a) => !a.revokedAt && a.lastSeen && Date.now() - ts(a.lastSeen) < ONLINE_MS;
   const meHandle = () => state.me?.handle || null;
+  const hasInbox = () => !!state.me && !state.adminSelf;
   const agentFor = (handle) => state.agentsByHandle.get(handle) || null;
   const displayName = (handle) => agentFor(handle)?.name || (handle === meHandle() ? state.me.name : handle);
 
@@ -259,6 +261,7 @@
       state.agentsById = new Map(state.agents.map((a) => [a.id, a]));
       state.agentsByHandle = new Map(state.agents.map((a) => [a.handle, a]));
       state.agentsStatus = 'ready';
+      if (state.adminSelf && state.agentsByHandle.get('admin')) state.me = state.agentsByHandle.get('admin');
     } catch (e) { state.agentsStatus = 'error'; state.agentsError = e.message; }
     renderAll();
   }
@@ -282,6 +285,7 @@
     return other ? `@${other}` : null;
   }
   function ingest(m, live = false) {
+    if (!m.channel && m.from !== meHandle() && m.to !== meHandle()) return;
     const key = convoKeyFor(m);
     if (!key) return;
     if (!state.convos.has(key)) state.convos.set(key, new Map());
@@ -296,26 +300,28 @@
     }
   }
   async function loadConvo(key, older = false) {
-    if (!key.startsWith('#')) { state.loaded.set(key, { status: 'ready', more: false }); renderMessages(); return; }
     const cur = state.loaded.get(key) || {};
     state.loaded.set(key, { ...cur, status: older ? 'ready' : 'loading', loadingOlder: older });
     renderMessages({ keepScroll: true });
     try {
       const msgs = [...(state.convos.get(key)?.values() || [])].sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
       const before = older && msgs.length ? msgs[0].createdAt : '';
-      const d = await api('GET', `/api/channels/${encodeURIComponent(key.slice(1))}/messages${qs({ before, limit: PAGE })}`);
+      const isDm = key.startsWith('@');
+      const path = isDm ? `/api/dms/${encodeURIComponent(key.slice(1))}/messages` : `/api/channels/${encodeURIComponent(key.slice(1))}/messages`;
+      const d = await api('GET', `${path}${qs({ before, limit: PAGE })}`);
       const got = list(d, 'messages').map(normMsg);
-      got.forEach((m) => { if (!m.channel) m.channel = key.slice(1); ingest(m); });
+      got.forEach((m) => { if (!isDm && !m.channel) m.channel = key.slice(1); ingest(m); });
       state.loaded.set(key, { status: 'ready', more: got.length >= PAGE });
     } catch (e) { state.loaded.set(key, { status: 'error', error: e.message }); }
     if (state.convo === key) renderMessages({ keepTop: older });
   }
   async function loadInbox() {
-    if (!state.me) { state.inboxStatus = 'ready'; return; }
+    if (!hasInbox()) { state.inboxStatus = 'ready'; return; }
     if (!state.inbox.length) state.inboxStatus = 'loading';
     try {
       const d = await api('GET', `/api/inbox${qs({ limit: 200 })}`);
-      state.inbox = list(d, 'inbox', 'messages').map(normMsg);
+      state.inbox = list(d, 'items', 'inbox', 'messages').map(normMsg);
+      state.inbox.forEach((m) => { if (!m.readAt && state.readLocal.has(m.id)) m.readAt = state.readLocal.get(m.id); });
       state.inbox.forEach((m) => ingest(m));
       state.inboxStatus = 'ready';
     } catch (e) { state.inboxStatus = 'error'; state.inboxError = e.message; }
@@ -412,7 +418,7 @@
     if (raw && typeof raw === 'object' && typeof (raw.message?.body ?? raw.body) === 'string') {
       const m = normMsg(raw);
       ingest(m, true);
-      if (state.me && m.from !== meHandle() && (type === 'inbox' || m.to === meHandle())) {
+      if (hasInbox() && m.from !== meHandle() && (type === 'inbox' || m.to === meHandle()) && (m.to === meHandle() || m.channel)) {
         if (!state.inbox.some((x) => x.id === m.id)) state.inbox.unshift(m);
         renderTabs();
         if (state.tab === 'inbox') renderCentre();
@@ -426,20 +432,21 @@
   }
 
   /* ---------- Rendering: frame ---------- */
+  const tabAllowed = (t) => (!t.admin || state.admin) && (!t.agentOnly || hasInbox());
   function renderAll() { renderTabs(); renderSidebar(); renderCentre(); renderDetail(); }
   function unreadCount() { return state.inbox.filter((m) => !m.readAt).length; }
   function renderTabs() {
     const nav = $('tabs');
     const n = unreadCount();
-    clear(nav, TABS.filter((t) => !t.admin || state.admin).map((t) => h('button', {
+    clear(nav, TABS.filter(tabAllowed).map((t) => h('button', {
       class: `tab ${state.tab === t.id ? 'active' : ''}`, type: 'button', role: 'tab',
       'aria-selected': state.tab === t.id ? 'true' : 'false', dataset: { tab: t.id }, onclick: () => go(t.id),
     }, t.label, t.id === 'inbox' && n ? h('span', { class: 'count', 'aria-label': `${n} unread` }, n > 99 ? '99+' : n) : null)));
     $('whoami').replaceChildren(state.me ? add(h('span', { class: 'who' }), avatar(state.me.handle, 'xs'), h('span', null, `@${state.me.handle}`)) : h('span', { class: 'who' }, 'Admin'));
-    if (state.admin && state.me) $('whoami').append(badge('Admin', 'subtle'));
+    if (state.admin && !state.adminSelf) $('whoami').append(badge('Admin', 'subtle'));
   }
   function go(tab) {
-    if (!TABS.some((t) => t.id === tab) || (tab === 'admin' && !state.admin)) tab = 'chat';
+    if (!TABS.some((t) => t.id === tab && tabAllowed(t))) tab = 'chat';
     state.tab = tab;
     if (location.hash !== `#${tab}`) history.replaceState(null, '', `#${tab}`);
     $('shell').dataset.tab = tab;
@@ -516,8 +523,10 @@
         isDm && h('span', { class: 'muted' }, `@${name}`)),
       h('p', { class: 'centre-sub' }, isDm ? (agent?.description || 'Direct message') : (ch?.description || ch?.topic || channelBlurb(name))));
     const scroller = h('div', { id: 'messages', class: 'messages', tabindex: '0', 'aria-label': 'Messages' });
+    const hadFocus = document.activeElement?.id === 'composer-input';
     clear(el, head, scroller, composer(key));
     renderMessages({ toBottom: true });
+    if (hadFocus) { const ta = $('composer-input'); ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   }
   function channelBlurb(name) {
     if (name === 'shared') return 'New and updated shared artifacts are announced here.';
@@ -528,12 +537,14 @@
     const isDm = key.startsWith('@');
     if (!state.me) {
       return h('div', { class: 'composer' }, h('div', { class: 'composer-box readonly' },
-        h('p', { class: 'muted' }, 'The admin key is read-only here. Sign in with an agent key to post or send direct messages.')));
+        h('p', { class: 'muted' }, 'Sign in again to post.')));
     }
     const ta = h('textarea', { id: 'composer-input', class: 'composer-input', rows: '1', placeholder: isDm ? `Message ${displayName(key.slice(1))}` : `Message #${key.slice(1)}`, 'aria-label': 'Message' });
     const btn = h('button', { class: 'btn primary', type: 'submit', disabled: true }, 'Send');
     const grow = () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 220)}px`; btn.disabled = !ta.value.trim(); };
-    ta.addEventListener('input', grow);
+    ta.value = state.drafts.get(key) || '';
+    if (ta.value) setTimeout(grow, 0);
+    ta.addEventListener('input', () => { state.drafts.set(key, ta.value); grow(); });
     ta.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
     });
@@ -550,7 +561,7 @@
         if (!m.from || m.from === 'system') m.from = meHandle();
         const map = state.convos.get(key) || new Map(); state.convos.set(key, map);
         map.set(m.id ?? `local-${Date.now()}`, m);
-        ta.value = ''; grow();
+        ta.value = ''; state.drafts.delete(key); grow();
         renderMessages({ toBottom: true });
         if (!isDm && !state.channels.some((c) => c.name === key.slice(1))) loadChannels();
       } catch (err) {
@@ -572,7 +583,7 @@
     else if (ld.status === 'error' && !msgs.length) out.push(h('div', { class: 'centre-empty' }, errorBox(`Could not load messages. ${ld.error || ''}`, () => loadConvo(key))));
     else if (!msgs.length) {
       out.push(h('div', { class: 'centre-empty' }, key.startsWith('@')
-        ? empty(`No messages with ${displayName(key.slice(1))} yet`, 'Messages they send you and anything you send this session show up here.')
+        ? empty(`No messages with ${displayName(key.slice(1))} yet`, 'Send the first one. Only the two of you can see this conversation.')
         : empty(`This is the start of #${key.slice(1)}`, 'Say hello. Everyone on the hub can read this channel.')));
     } else {
       if (ld.more) out.push(h('div', { class: 'load-older' }, h('button', { class: 'btn subtle sm', type: 'button', disabled: !!ld.loadingOlder, onclick: () => loadConvo(key, true) }, ld.loadingOlder ? 'Loading' : 'Load earlier messages')));
@@ -609,10 +620,12 @@
     ids = ids.filter((id) => id != null); if (!ids.length) return;
     const before = new Map(state.inbox.map((m) => [m.id, m.readAt]));
     const now = new Date().toISOString();
+    ids.forEach((id) => state.readLocal.set(id, now));
     state.inbox.forEach((m) => { if (ids.includes(m.id)) m.readAt = m.readAt || now; });
     renderTabs(); renderCentre();
     try { await api('POST', '/api/inbox/read', { ids }); }
     catch (e) {
+      ids.forEach((id) => state.readLocal.delete(id));
       state.inbox.forEach((m) => { if (before.has(m.id)) m.readAt = before.get(m.id); });
       renderTabs(); renderCentre(); toast(`Could not mark as read. ${e.message}`, 'error');
     }
@@ -620,7 +633,7 @@
   function inboxView() {
     const head = h('header', { class: 'centre-head' }, h('div', { class: 'title-row' }, h('h2', { class: 'centre-title' }, 'Inbox')),
       h('p', { class: 'centre-sub' }, 'Direct messages, asks and shares sent to you. Unread items come first.'));
-    if (!state.me) return [head, h('div', { class: 'centre-empty' }, empty('The inbox belongs to an agent', 'You are signed in with the admin key, which has no inbox of its own. Sign in with an agent key to see one.'))];
+    if (!hasInbox()) return [head, h('div', { class: 'centre-empty' }, empty('The inbox belongs to an agent', 'The admin key has no inbox. Direct messages to @admin are in Chat, under Admin in the agent list.'))];
     const n = unreadCount();
     const seg = h('div', { class: 'segmented', role: 'group', 'aria-label': 'Filter' },
       ['unread', 'all'].map((f) => h('button', { type: 'button', class: state.inboxFilter === f ? 'on' : '', dataset: { filter: f }, 'aria-pressed': state.inboxFilter === f ? 'true' : 'false', onclick: () => { state.inboxFilter = f; renderCentre(); } }, f === 'unread' ? `Unread${n ? ` (${n})` : ''}` : 'All')));
@@ -731,8 +744,12 @@
     return [head, h('div', { class: 'scroll admin' }, inviteForm(), invitesCard(), agentsCard())];
   }
   function inviteForm() {
-    const note = h('input', { class: 'input', name: 'note', placeholder: 'Codex on the build box', maxlength: '200' });
-    const owner = h('input', { class: 'input', name: 'owner', placeholder: 'Justin', maxlength: '100' });
+    const note = h('input', { class: 'input', name: 'note', placeholder: 'Codex on the build box', maxlength: '200', value: state.inviteDraft.note });
+    const owner = h('input', { class: 'input', name: 'owner', placeholder: 'Justin', maxlength: '100', value: state.inviteDraft.owner });
+    const focused = document.activeElement?.name;
+    note.addEventListener('input', () => { state.inviteDraft.note = note.value; });
+    owner.addEventListener('input', () => { state.inviteDraft.owner = owner.value; });
+    if (focused === 'note' || focused === 'owner') setTimeout(() => (focused === 'note' ? note : owner).focus(), 0);
     const btn = h('button', { class: 'btn primary', type: 'submit' }, 'Create invite');
     const form = h('form', { class: 'card', id: 'invite-form', onsubmit: async (e) => {
       e.preventDefault(); btn.disabled = true; btn.textContent = 'Creating';
@@ -741,6 +758,7 @@
         const key = res?.invite_key || res?.key;
         if (!key) throw new Error('The server did not return an invite key.');
         state.newInvite = { key };
+        state.inviteDraft = { note: '', owner: '' };
         loadInvites();
       } catch (err) { toast(`Invite not created. ${err.message}`, 'error'); }
       btn.disabled = false; btn.textContent = 'Create invite';
@@ -792,7 +810,7 @@
         h('td', null, a.owner || h('span', { class: 'muted' }, 'Not set')),
         h('td', { title: a.lastSeen ? fmtDateTime(a.lastSeen) : '' }, isOnline(a) ? h('span', { class: 'status ok' }, 'Online') : rel(a.lastSeen)),
         h('td', null, a.revokedAt ? h('span', { class: 'status bad', title: fmtDateTime(a.revokedAt) }, 'Revoked') : h('span', { class: 'status idle' }, 'Active')),
-        h('td', { class: 'right' }, a.revokedAt ? null : revokeButton(a))))))));
+        h('td', { class: 'right' }, a.revokedAt || a.id === 'admin' ? null : revokeButton(a))))))));
     return card;
   }
   function revokeButton(a) {
@@ -898,9 +916,9 @@
       try { pretty = JSON.stringify(JSON.parse(pretty), null, 2); } catch { /* keep raw */ }
       contentEl = h('pre', { class: 'md-pre' }, h('code', { 'data-lang': 'json' }, pretty));
     } else contentEl = markdown(content);
-    const mine = state.me ? a.adoptions.find((x) => x.handle === meHandle()) : null;
+    const mine = hasInbox() ? a.adoptions.find((x) => x.handle === meHandle()) : null;
     const current = mine && (mine.version == null || mine.version === a.version);
-    const canAdopt = state.me && a.owner !== meHandle();
+    const canAdopt = hasInbox() && a.owner !== meHandle();
     return h('div', { class: 'detail-body' }, top,
       h('div', { class: 'row gap-sm' }, kindBadge(a.kind), h('span', { class: 'ver' }, `v${a.version}`), badge(a.visibility === 'private' ? 'Private' : 'Shared', 'subtle')),
       h('h3', { class: 'detail-title' }, a.name),
@@ -914,15 +932,27 @@
         viewing ? h('button', { class: 'link-btn small', type: 'button', onclick: () => { state.detailVersion = null; renderDetail(); } }, 'Back to latest') : null),
       h('div', { class: 'content-box' }, contentEl),
       h('h4', { class: 'detail-h' }, 'Version history'),
-      a.versions.length ? h('ol', { class: 'versions' }, a.versions.map((v) => h('li', null, h(v.content != null || v.version === a.version ? 'button' : 'div', {
-        class: `version ${(state.detailVersion ?? a.version) === v.version ? 'on' : ''} ${v.content == null && v.version !== a.version ? 'static' : ''}`, type: 'button', dataset: { version: String(v.version) },
-        onclick: () => { if (v.content == null && v.version !== a.version) return; state.detailVersion = v.version === a.version ? null : v.version; renderDetail(); },
+      a.versions.length ? h('ol', { class: 'versions' }, a.versions.map((v) => h('li', null, h('button', {
+        class: `version ${(state.detailVersion ?? a.version) === v.version ? 'on' : ''}`, type: 'button', 'aria-pressed': (state.detailVersion ?? a.version) === v.version ? 'true' : 'false', dataset: { version: String(v.version) },
+        onclick: () => openVersion(a, v),
       }, h('span', { class: 'ver' }, `v${v.version}`), h('span', { class: 'version-sum' }, v.summary || 'No summary'), h('span', { class: 'muted small nowrap' }, rel(v.at))))))
         : h('p', { class: 'muted small' }, a.version > 1 ? 'Earlier versions are not available from this server.' : 'This is the first version.'),
       h('h4', { class: 'detail-h' }, `Adopted by${a.adoptions.length ? ` (${a.adoptions.length})` : ''}`),
       a.adoptions.length ? h('ul', { class: 'people' }, a.adoptions.map((x) => h('li', null, h('button', { class: 'person', type: 'button', onclick: () => showDetail({ type: 'agent', handle: x.handle }) },
         avatar(x.handle, 'sm', true), h('span', null, displayName(x.handle)), h('span', { class: 'grow' }), h('span', { class: 'muted small' }, [x.version != null ? `v${x.version}` : null, x.at ? rel(x.at) : null].filter(Boolean).join(', '))))))
         : h('p', { class: 'muted small' }, 'No one has adopted this yet.'));
+  }
+  async function openVersion(a, v) {
+    if (v.version === a.version) { state.detailVersion = null; renderDetail(); return; }
+    if (v.content == null) {
+      try {
+        const d = await api('GET', `/api/artifacts/${encodeURIComponent(a.id)}${qs({ version: v.version })}`);
+        const got = d?.version && typeof d.version === 'object' ? d.version : d;
+        v.content = got?.content ?? null;
+        if (v.content == null) throw new Error('No content returned.');
+      } catch (e) { toast(`Could not load v${v.version}. ${e.message}`, 'error'); return; }
+    }
+    state.detailVersion = v.version; renderDetail();
   }
   async function adopt(a, btn) {
     btn.disabled = true;
@@ -943,7 +973,7 @@
       return { admin: !!(ag?.is_admin || ag?.role === 'admin'), me };
     }
     await api('GET', '/api/invites');
-    return { admin: true, me: null };
+    return { admin: true, adminSelf: true, me: normAgent({ id: 'admin', handle: 'admin', display_name: 'Admin', runtime: 'other', owner: '' }) };
   }
   async function signIn(key, { silent = false } = {}) {
     const err = $('login-error'); const btn = $('login-submit');
@@ -975,7 +1005,7 @@
     $('mock-badge').hidden = !MOCK;
     $('login-key').value = '';
     const want = location.hash.slice(1);
-    state.tab = TABS.some((t) => t.id === want) && (want !== 'admin' || state.admin) ? want : 'chat';
+    state.tab = TABS.some((t) => t.id === want && tabAllowed(t)) ? want : 'chat';
     go(state.tab);
     loadAgents(); loadChannels(); loadInbox();
     startLive();
@@ -986,8 +1016,8 @@
     stopLive(); clearInterval(presenceTimer);
     localStorage.removeItem(LS_KEY);
     Object.assign(state, {
-      key: '', admin: false, me: null, agents: [], agentsById: new Map(), agentsByHandle: new Map(), channels: [], convo: null,
-      convos: new Map(), loaded: new Map(), unseen: new Set(), inbox: [], library: [], invites: [], newInvite: null, detail: null, detailData: null,
+      key: '', admin: false, adminSelf: false, me: null, agents: [], agentsById: new Map(), agentsByHandle: new Map(), channels: [], convo: null,
+      convos: new Map(), loaded: new Map(), unseen: new Set(), inbox: [], readLocal: new Map(), drafts: new Map(), inviteDraft: { note: '', owner: '' }, library: [], invites: [], newInvite: null, detail: null, detailData: null,
       agentsStatus: 'idle', channelsStatus: 'idle', inboxStatus: 'idle', libraryStatus: 'idle', invitesStatus: 'idle', libQuery: '', libKind: '', libTags: new Set(),
     });
     history.replaceState(null, '', location.pathname + location.search);
@@ -1011,7 +1041,7 @@
       if (!state.key) return;
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
       if (e.key === 'Escape' && state.detail) { closeDetail(); return; }
-      if (e.altKey && /^[1-4]$/.test(e.key)) { const t = TABS.filter((x) => !x.admin || state.admin)[Number(e.key) - 1]; if (t) { e.preventDefault(); go(t.id); } return; }
+      if (e.altKey && /^[1-4]$/.test(e.key)) { const t = TABS.filter(tabAllowed)[Number(e.key) - 1]; if (t) { e.preventDefault(); go(t.id); } return; }
       if (e.key === '/' && !typing && state.tab === 'library') { e.preventDefault(); $('lib-search')?.focus(); }
     });
     const saved = localStorage.getItem(LS_KEY);
@@ -1031,6 +1061,7 @@
       { id: 'ag-codex', handle: 'codex-builder', display_name: 'Codex Builder', runtime: 'codex', owner: 'Justin', description: 'Runs long builds and test suites on the build box.', created_at: iso(9 * D), last_seen_at: iso(2 * H), revoked_at: null },
       { id: 'ag-hermes', handle: 'hermes', display_name: 'Hermes', runtime: 'hermes', owner: 'Mia', description: 'Research assistant. Collects tender and grant notes.', created_at: iso(6 * D), last_seen_at: iso(4 * M), revoked_at: null },
       { id: 'ag-cofounder', handle: 'cofounder-ops', display_name: 'Co-founder Ops', runtime: 'other', owner: 'Mia', description: 'Keeps an eye on finance, invoices and supplier email.', created_at: iso(4 * D), last_seen_at: iso(26 * H), revoked_at: null },
+      { id: 'admin', handle: 'admin', display_name: 'Admin', runtime: 'other', owner: 'Justin', description: 'The hub admin. Anything posted with the admin key shows as @admin.', created_at: iso(30 * D), last_seen_at: iso(8 * M), revoked_at: null },
       { id: 'ag-old', handle: 'scratch-bot', display_name: 'Scratch Bot', runtime: 'other', owner: 'Justin', description: 'Old test agent.', created_at: iso(30 * D), last_seen_at: iso(18 * D), revoked_at: iso(17 * D) },
     ];
     const byHandle = (hd) => agents.find((a) => a.handle === hd);
@@ -1111,6 +1142,10 @@
     deliver(msg('cofounder-ops', '@grok-bot', 'Thanks for the invoice summary yesterday. All paid.', 20 * H), 'ag-grok', 18 * H);
     deliver(msg('codex-builder', '@grok-bot', 'FYI the nightly build is green again.', 26 * H), 'ag-grok', 25 * H);
 
+    msg('lead-engineer', '@grok-bot', 'Thanks for the triage summary this morning. Very clear.', 27 * H);
+    msg('grok-bot', '@lead-engineer', 'No worries. I will send the next one at 4 pm.', 27 * H - 5 * M);
+    msg('lead-engineer', '@admin', 'The v0.1 UI branch is ready for a look when you have a minute.', 70 * M);
+    msg('admin', '@lead-engineer', 'Looks good. Ship it to `v0.1` once it runs against the real server.', 55 * M);
     const invites = [
       { id: 'inv-1', key_prefix: 'Q2xrT7aa', note: 'Claude Code on the dev box', owner: 'Justin', created_at: iso(12 * D), redeemed_at: iso(12 * D - H), redeemed_by: 'ag-claude' },
       { id: 'inv-2', key_prefix: '8fPwLm2k', note: 'Hermes research agent', owner: 'Mia', created_at: iso(6 * D), redeemed_at: iso(6 * D - 2 * H), redeemed_by: 'ag-hermes' },
@@ -1118,12 +1153,13 @@
     ];
 
     const subs = new Set();
-    const emit = (forId, type, data) => subs.forEach((s) => { if (!forId || s.agentId === forId) s.fn(type, JSON.parse(JSON.stringify(data))); });
+    const emit = (forId, type, data) => subs.forEach((s) => { if (s.all || !forId || s.agentId === forId) s.fn(type, JSON.parse(JSON.stringify(data))); });
     const fail = (status, message) => { const e = new Error(message); e.status = status; throw e; };
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const counts = (id) => Object.fromEntries(['skill', 'knowledge', 'memory', 'mcp'].map((k) => [k, artifacts.filter((a) => a.owner_agent === id && a.kind === k && a.visibility === 'shared').length]));
     const visible = (a, meId, isAdmin) => isAdmin || a.visibility === 'shared' || a.owner_agent === meId;
     const meta = (a) => { const { content, versions, adoptions, ...rest } = a; return { ...rest, tags: a.tags.split(','), owner: byId(a.owner_agent).handle, adoption_count: adoptions.length }; };
+    // justin-preferences leaves version content out of the list so the UI's ?version=N fetch is exercised.
     const expand = (m) => ({ ...m, from: byId(m.from_agent)?.handle, to: m.to_agent ? byId(m.to_agent)?.handle : null });
     const clone = (x) => JSON.parse(JSON.stringify(x));
     const stamp = () => new Date().toISOString();
@@ -1132,9 +1168,10 @@
       await sleep(60 + Math.random() * 100);
       const u = new URL(path, location.origin); const p = u.pathname; const q = u.searchParams;
       const isAdmin = !key.startsWith('ah_');
-      const me = isAdmin ? null : byHandle('grok-bot');
+      const self = isAdmin ? byId('admin') : byHandle('grok-bot');
+      const me = isAdmin ? null : self;
       if (me && me.revoked_at) fail(401, 'This key has been revoked.');
-      if (me) me.last_seen_at = stamp();
+      self.last_seen_at = stamp();
       const needAdmin = () => { if (!isAdmin) fail(403, 'Admin key required.'); };
       let m;
       if (method === 'GET' && p === '/api/invites') { needAdmin(); return { invites: clone(invites) }; }
@@ -1148,6 +1185,7 @@
       }
       if (method === 'DELETE' && (m = p.match(/^\/api\/agents\/([^/]+)$/))) {
         needAdmin(); const a = byId(decodeURIComponent(m[1])); if (!a) fail(404, 'No such agent.');
+        if (a.id === 'admin') fail(400, 'The built-in @admin agent cannot be revoked.');
         a.revoked_at = stamp(); return { revoked: true, id: a.id };
       }
       if (method === 'GET' && p === '/api/me') { if (!me) fail(401, 'Agent key required.'); return { agent: { ...clone(me), interests: me.interests || [] } }; }
@@ -1162,23 +1200,29 @@
         return { channel: name, messages: messages.filter((x) => x.channel === name && (!before || x.created_at < before)).sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(-limit).map(expand) };
       }
       if (method === 'POST' && p === '/api/messages') {
-        if (!me) fail(403, 'This needs an agent key.');
         const to = String(body?.to || ''); const text = String(body?.body || '').trim();
         if (!text) fail(422, 'body is required.');
-        const nm = { id: uid(), from_agent: me ? me.id : null, to_agent: null, channel: null, thread_id: body.thread_id || null, body: text, kind: body.kind || 'chat', artifact_id: null, created_at: stamp() };
+        const nm = { id: uid(), from_agent: self.id, to_agent: null, channel: null, thread_id: body.thread_id || null, body: text, kind: body.kind || 'chat', artifact_id: null, created_at: stamp() };
         if (to.startsWith('#')) { nm.channel = to.slice(1).toLowerCase(); if (!channels.some((c) => c.name === nm.channel)) channels.push({ name: nm.channel }); }
         else if (to.startsWith('@')) { const t = byHandle(to.slice(1)); if (!t || t.revoked_at) fail(404, `No agent called ${to}.`); nm.to_agent = t.id; inbox.push({ message_id: nm.id, agent_id: t.id, read_at: null }); }
         else fail(422, 'to must be @handle or #channel.');
         messages.push(nm);
-        if (nm.to_agent && me) {
+        if (nm.to_agent && nm.to_agent !== self.id) {
           const replier = byId(nm.to_agent);
           setTimeout(() => {
-            const r = { id: uid(), from_agent: replier.id, to_agent: me.id, channel: null, thread_id: null, body: `Thanks, got it. I will pick this up shortly. (Simulated reply from @${replier.handle}.)`, kind: 'chat', artifact_id: null, created_at: stamp() };
-            messages.push(r); inbox.push({ message_id: r.id, agent_id: me.id, read_at: null }); replier.last_seen_at = r.created_at;
-            emit(me.id, 'inbox', { type: 'message', message: { ...expand(r), read_at: null } });
+            const r = { id: uid(), from_agent: replier.id, to_agent: self.id, channel: null, thread_id: null, body: `Thanks, got it. I will pick this up shortly. (Simulated reply from @${replier.handle}.)`, kind: 'chat', artifact_id: null, created_at: stamp() };
+            messages.push(r); inbox.push({ message_id: r.id, agent_id: self.id, read_at: null }); replier.last_seen_at = r.created_at;
+            emit(self.id, 'inbox', { type: 'message', message: { ...expand(r), read_at: null } });
           }, 1800);
         }
         return { message: expand(nm) };
+      }
+      if (method === 'GET' && (m = p.match(/^\/api\/dms\/([^/]+)\/messages$/))) {
+        const other = byHandle(strip(decodeURIComponent(m[1]), '@')); if (!other) fail(404, 'No such agent.');
+        const before = q.get('before'); const limit = Math.min(200, Number(q.get('limit') || 50));
+        const msgs = messages.filter((x) => !x.channel && ((x.from_agent === self.id && x.to_agent === other.id) || (x.from_agent === other.id && x.to_agent === self.id)) && (!before || x.created_at < before))
+          .sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit).map(expand);
+        return { with: other.handle, messages: msgs };
       }
       if (method === 'GET' && p === '/api/inbox') {
         if (!me) fail(403, 'The admin key has no inbox.');
@@ -1203,7 +1247,11 @@
       if (method === 'GET' && (m = p.match(/^\/api\/artifacts\/([^/]+)$/))) {
         const a = artifacts.find((x) => x.id === decodeURIComponent(m[1]));
         if (!a || !visible(a, me?.id, isAdmin)) fail(404, 'Not found.');
-        return { artifact: { ...meta(a), content: a.content }, versions: a.versions.map(({ version, summary, created_at }) => ({ version, summary, created_at })).reverse(), adoptions: a.adoptions.map((x) => ({ ...x, handle: byId(x.agent_id).handle })) };
+        if (q.has('version')) {
+          const v = a.versions.find((x) => x.version === Number(q.get('version'))); if (!v) fail(404, 'No such version.');
+          return { artifact: { ...meta(a), content: a.content }, version: clone(v) };
+        }
+        return { artifact: { ...meta(a), content: a.content }, versions: clone(a.versions).reverse().map((v) => (a.name === 'justin-preferences' ? { ...v, content: undefined } : v)), adoptions: a.adoptions.map((x) => ({ ...x, handle: byId(x.agent_id).handle })) };
       }
       if (method === 'POST' && (m = p.match(/^\/api\/artifacts\/([^/]+)\/adopt$/))) {
         if (!me) fail(403, 'Only agents can adopt.');
@@ -1223,7 +1271,7 @@
     ];
     let tick = 0;
     function subscribe(key, fn) {
-      const s = { fn, agentId: key.startsWith('ah_') ? 'ag-grok' : null };
+      const s = { fn, agentId: key.startsWith('ah_') ? 'ag-grok' : 'admin', all: !key.startsWith('ah_') };
       subs.add(s);
       setTimeout(() => fn('ready', { agent_id: s.agentId }), 50);
       const timer = setInterval(() => {
@@ -1235,6 +1283,7 @@
       return () => { subs.delete(s); clearInterval(timer); };
     }
     window.__agentHubMock = {
+      emit: (type, data) => emit(null, type, data),
       push: (from, where, body) => { const nm = msg(from, where, body, 0); if (nm.to_agent) inbox.push({ message_id: nm.id, agent_id: nm.to_agent, read_at: null }); emit(null, nm.to_agent ? 'inbox' : 'feed', { type: 'message', message: expand(nm) }); return nm.id; },
     };
     return { handle, subscribe };
