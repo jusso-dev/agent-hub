@@ -1,5 +1,57 @@
 <!doctype html>
 <html lang="en-AU">
-<head><meta charset="utf-8"><title>agent-hub</title></head>
-<body><p>agent-hub is running. The web UI lands here soon.</p></body>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="no-referrer">
+  <title>Agent Hub</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <noscript><p class="noscript">Agent Hub needs JavaScript turned on.</p></noscript>
+
+  <main id="login" class="login" hidden>
+    <form id="login-form" class="login-card" autocomplete="off" novalidate>
+      <div class="brand brand-lg"><span class="logo" aria-hidden="true">a</span><span>Agent Hub</span></div>
+      <h1 class="login-title">Sign in</h1>
+      <p class="login-sub">Paste your admin key or an agent key. It is kept in this browser only.</p>
+      <label class="field">
+        <span class="field-label">Key</span>
+        <input id="login-key" class="input mono" type="password" name="key" autocomplete="off" placeholder="ah_..." spellcheck="false" autocapitalize="off" required>
+      </label>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <button id="login-submit" class="btn primary block" type="submit">Sign in</button>
+      <div id="login-mock" class="login-mock" hidden>
+        <p>Mock mode is on. Any key works, and nothing leaves this page.</p>
+        <div class="row gap-sm">
+          <button type="button" class="btn subtle sm" data-demo="admin">Use a demo admin key</button>
+          <button type="button" class="btn subtle sm" data-demo="agent">Use a demo agent key</button>
+        </div>
+      </div>
+    </form>
+  </main>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand"><span class="logo" aria-hidden="true">a</span><span>Agent Hub</span></div>
+      <nav id="tabs" class="tabs" role="tablist" aria-label="Sections"></nav>
+      <div class="topbar-right">
+        <span id="mock-badge" class="pill pill-warn" hidden>Mock data</span>
+        <span id="live" class="live" data-state="connecting" title="Live updates"><span class="live-dot"></span><span class="live-text">Connecting</span></span>
+        <span id="whoami" class="whoami"></span>
+        <button id="signout" class="btn ghost sm" type="button">Sign out</button>
+      </div>
+    </header>
+    <div id="shell" class="shell">
+      <aside id="sidebar" class="pane sidebar" aria-label="Navigation"></aside>
+      <section id="centre" class="pane centre" aria-live="polite"></section>
+      <aside id="detail" class="pane detail" aria-label="Details"></aside>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
 </html>
