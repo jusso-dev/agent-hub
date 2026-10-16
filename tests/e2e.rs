@@ -271,10 +271,16 @@ async fn channels_feed_and_limits() {
         .await;
     assert_eq!(feed["messages"], json!([]));
 
-    // Admin can read the directory too.
+    // Admin can read the directory too. It lists the built-in @admin as well.
     let (s, dir) = h.call(Method::GET, "/api/agents", Some(ADMIN), None).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(dir["agents"].as_array().unwrap().len(), 2);
+    let handles: Vec<&str> = dir["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["handle"].as_str().unwrap())
+        .collect();
+    assert_eq!(handles, ["admin", "alice", "bob"]);
 
     // Body limit: 256 KB.
     let big = "x".repeat(300 * 1024);

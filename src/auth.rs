@@ -17,6 +17,8 @@ use crate::AppState;
 pub const AGENT_KEY_PREFIX: &str = "ah_";
 pub const INVITE_KEY_PREFIX: &str = "ahi_";
 pub const LOOKUP_LEN: usize = 8;
+/// Id and handle of the built-in agent the admin key writes as (seeded by migration 0002).
+pub const ADMIN_AGENT_ID: &str = "admin";
 
 #[derive(Clone, Debug, Serialize, sqlx::FromRow)]
 pub struct AgentRow {
@@ -72,7 +74,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn check_rate(state: &AppState, id: &str) -> Result<(), ApiError> {
+fn check_rate(state: &AppState, id: &str, limit: u32) -> Result<(), ApiError> {
     let mut map = state.rate.lock().expect("rate lock");
     let now = Instant::now();
     let entry = map.entry(id.to_string()).or_insert((now, 0));
@@ -80,10 +82,10 @@ fn check_rate(state: &AppState, id: &str) -> Result<(), ApiError> {
         *entry = (now, 0);
     }
     entry.1 += 1;
-    if entry.1 > state.rate_limit_per_min {
+    if entry.1 > limit {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            "rate limit: 60 requests per minute per key",
+            format!("rate limit: {limit} requests per minute for this key"),
         ));
     }
     Ok(())
@@ -167,21 +169,70 @@ impl Viewer {
     }
 }
 
+async fn authenticate(parts: &Parts, state: &AppState, limited: bool) -> Result<Viewer, ApiError> {
+    let key = bearer(parts).ok_or_else(ApiError::unauthorized)?;
+    if ct_eq(key.as_bytes(), state.admin_key.as_bytes()) {
+        if limited {
+            check_rate(state, "admin", state.admin_rate_limit_per_min)?;
+        }
+        return Ok(Viewer::Admin);
+    }
+    if !key.starts_with(AGENT_KEY_PREFIX) {
+        return Err(ApiError::unauthorized());
+    }
+    let agent = agent_from_key(state, key).await?;
+    if limited {
+        check_rate(state, &agent.id, state.rate_limit_per_min)?;
+    }
+    Ok(Viewer::Agent(Box::new(agent)))
+}
+
 impl FromRequestParts<AppState> for Viewer {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        let key = bearer(parts).ok_or_else(ApiError::unauthorized)?;
-        if ct_eq(key.as_bytes(), state.admin_key.as_bytes()) {
-            check_rate(state, "admin")?;
-            return Ok(Viewer::Admin);
+        authenticate(parts, state, true).await
+    }
+}
+
+/// Like `Viewer` but not rate limited. Only for the long-lived SSE stream.
+pub struct StreamViewer(pub Viewer);
+
+impl FromRequestParts<AppState> for StreamViewer {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        authenticate(parts, state, false).await.map(StreamViewer)
+    }
+}
+
+/// An agent, or the admin key acting as the built-in `@admin` agent.
+/// Used for posting messages and reading DM history.
+pub struct Writer(pub AgentRow);
+
+impl FromRequestParts<AppState> for Writer {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        match Viewer::from_request_parts(parts, state).await? {
+            Viewer::Agent(a) => Ok(Writer(*a)),
+            Viewer::Admin => {
+                let ts = now();
+                sqlx::query("UPDATE agents SET last_seen_at = ? WHERE id = ?")
+                    .bind(&ts)
+                    .bind(ADMIN_AGENT_ID)
+                    .execute(&state.pool)
+                    .await?;
+                let agent = sqlx::query_as::<_, AgentRow>(&format!(
+                    "SELECT {AGENT_COLS} FROM agents WHERE id = ?"
+                ))
+                .bind(ADMIN_AGENT_ID)
+                .fetch_optional(&state.pool)
+                .await?
+                .ok_or_else(|| ApiError::forbidden("admin agent missing; run migrations"))?;
+                Ok(Writer(agent))
+            }
         }
-        if !key.starts_with(AGENT_KEY_PREFIX) {
-            return Err(ApiError::unauthorized());
-        }
-        let agent = agent_from_key(state, key).await?;
-        check_rate(state, &agent.id)?;
-        Ok(Viewer::Agent(Box::new(agent)))
     }
 }
 

@@ -99,7 +99,7 @@ impl TagsIn {
 
 static SECRET_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        r"\bsk-[A-Za-z0-9_\-]{8,}",
+        r"\bsk-[A-Za-z0-9_\-]{16,}",
         r"\bghp_[A-Za-z0-9]{8,}",
         r"\bgho_[A-Za-z0-9]{8,}",
         r"\bxox[abprse]-[A-Za-z0-9\-]{6,}",
@@ -467,6 +467,7 @@ fn can_see(viewer: &Viewer, row: &Row) -> bool {
 struct VersionOut {
     version: i64,
     summary: String,
+    content: String,
     created_at: String,
 }
 
@@ -478,18 +479,36 @@ struct AdoptionOut {
     adopted_at: String,
 }
 
-/// Full artifact with version history and who adopted it.
+#[derive(Deserialize)]
+pub struct GetQuery {
+    version: Option<i64>,
+}
+
+/// Full artifact with version history (each with content) and who adopted it.
+/// With `?version=N`: the current artifact plus just that version.
 pub async fn get_one(
     viewer: Viewer,
     State(st): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<GetQuery>,
 ) -> ApiResult<Json<Value>> {
     let row = fetch(&st, &id)
         .await?
         .filter(|r| can_see(&viewer, r))
         .ok_or_else(|| ApiError::not_found("no such artifact"))?;
+    if let Some(n) = q.version {
+        let v: VersionOut = sqlx::query_as(
+            "SELECT version, summary, content, created_at FROM artifact_versions WHERE artifact_id = ? AND version = ?",
+        )
+        .bind(&id)
+        .bind(n)
+        .fetch_optional(&st.pool)
+        .await?
+        .ok_or_else(|| ApiError::not_found("no such version"))?;
+        return Ok(Json(json!({ "artifact": row.out(true), "version": v })));
+    }
     let versions: Vec<VersionOut> = sqlx::query_as(
-        "SELECT version, summary, created_at FROM artifact_versions WHERE artifact_id = ? ORDER BY version DESC",
+        "SELECT version, summary, content, created_at FROM artifact_versions WHERE artifact_id = ? ORDER BY version DESC",
     )
     .bind(&id)
     .fetch_all(&st.pool)
@@ -637,6 +656,20 @@ mod tests {
         assert!(!has_secret(r#"{"password": ""}"#));
         assert!(!has_secret(
             r#"{"command": "npx", "args": ["task-runner-thing"]}"#
+        ));
+    }
+
+    #[test]
+    fn sk_pattern_needs_key_shape() {
+        assert!(has_secret("OPENAI_API_KEY=sk-proj-abcdefghijklmnop1234"));
+        assert!(has_secret("sk-abcdefghijklmnop"));
+        // Too short to be a key.
+        assert!(!has_secret("sk-abcdefghijklmno"));
+        // Words ending in "sk" are not keys.
+        assert!(!has_secret("task-abcdefghijklmnopqrstuvwxyz"));
+        assert!(!has_secret("disk-0123456789abcdefghijklmn"));
+        assert!(!has_secret(
+            "run the risk-assessment-for-everything-here step"
         ));
     }
 }

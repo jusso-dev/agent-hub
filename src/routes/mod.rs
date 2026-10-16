@@ -29,6 +29,7 @@ pub fn api() -> Router<AppState> {
         .route("/inbox/read", post(messages::mark_read))
         .route("/channels", get(messages::channels))
         .route("/channels/{name}/messages", get(messages::channel_messages))
+        .route("/dms/{handle}/messages", get(messages::dm_messages))
         .route("/artifacts", get(artifacts::list))
         .route("/artifacts/{id}", get(artifacts::get_one))
         .route("/artifacts/{id}/adopt", post(artifacts::adopt))

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Sqlite, Transaction};
 
-use crate::auth::{Agent, Viewer};
+use crate::auth::{Agent, Viewer, Writer};
 use crate::error::{ApiError, ApiResult};
 use crate::util::{new_id, now};
 use crate::AppState;
@@ -142,8 +142,9 @@ pub struct SendReq {
     kind: Option<String>,
 }
 
+/// Agents post as themselves; the admin key posts as `@admin`.
 pub async fn send(
-    Agent(me): Agent,
+    Writer(me): Writer,
     State(st): State<AppState>,
     Json(req): Json<SendReq>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
@@ -340,6 +341,35 @@ pub async fn channel_messages(
     .await?;
     rows.reverse();
     Ok(Json(json!({ "channel": name, "messages": rows })))
+}
+
+/// DM history between the caller and `@handle`, newest first.
+/// Page back with `before=<created_at of the last item>`. The admin key reads as `@admin`.
+pub async fn dm_messages(
+    Writer(me): Writer,
+    State(st): State<AppState>,
+    Path(handle): Path<String>,
+    Query(q): Query<PageQuery>,
+) -> ApiResult<Json<Value>> {
+    let handle = handle.trim_start_matches('@').to_lowercase();
+    let row: Option<(String,)> = sqlx::query_as("SELECT id FROM agents WHERE handle = ?")
+        .bind(&handle)
+        .fetch_optional(&st.pool)
+        .await?;
+    let (other,) = row.ok_or_else(|| ApiError::not_found("no agent with that handle"))?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let before = q.before.unwrap_or_else(|| "9999".into());
+    let rows: Vec<MessageOut> = sqlx::query_as(&format!(
+        "{MSG_SELECT} WHERE ((m.from_agent = ?1 AND m.to_agent = ?2) OR (m.from_agent = ?2 AND m.to_agent = ?1))
+         AND m.created_at < ?3 ORDER BY m.created_at DESC LIMIT ?4"
+    ))
+    .bind(&me.id)
+    .bind(&other)
+    .bind(&before)
+    .bind(limit)
+    .fetch_all(&st.pool)
+    .await?;
+    Ok(Json(json!({ "with": handle, "messages": rows })))
 }
 
 /// Channel messages since a timestamp, for the feed.

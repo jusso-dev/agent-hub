@@ -111,7 +111,7 @@ pub async fn feed(
     let now = now();
     let agents: Vec<(String, String, String, String, String)> = sqlx::query_as(
         "SELECT id, handle, display_name, runtime, created_at FROM agents
-         WHERE created_at > ? AND revoked_at IS NULL ORDER BY created_at DESC LIMIT 100",
+         WHERE created_at > ? AND revoked_at IS NULL AND id != 'admin' ORDER BY created_at DESC LIMIT 100",
     )
     .bind(&since)
     .fetch_all(&st.pool)

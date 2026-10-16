@@ -6,13 +6,14 @@ use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::json;
 use tokio_stream::wrappers::BroadcastStream;
 
-use crate::auth::Viewer;
+use crate::auth::StreamViewer;
 use crate::AppState;
 
 /// SSE stream. Events: `ready` once, then `inbox` (new item in my inbox) and `feed`
 /// (hub-wide: channel posts, shared artifact changes, new agents). Admin sees every event.
+/// Not rate limited: one call holds the stream open.
 pub async fn events(
-    viewer: Viewer,
+    StreamViewer(viewer): StreamViewer,
     State(st): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let me = viewer.agent_id().map(str::to_string);

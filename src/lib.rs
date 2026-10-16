@@ -16,8 +16,10 @@ use tower_http::trace::TraceLayer;
 
 /// Max request body: 256 KB.
 pub const BODY_LIMIT: usize = 256 * 1024;
-/// Requests allowed per key per minute.
+/// Requests allowed per agent key per minute.
 pub const RATE_LIMIT_PER_MIN: u32 = 60;
+/// Requests allowed for the admin key per minute (the web UI makes many calls).
+pub const ADMIN_RATE_LIMIT_PER_MIN: u32 = 600;
 
 /// Something pushed to SSE subscribers.
 #[derive(Clone, Debug, Serialize)]
@@ -40,6 +42,7 @@ pub struct AppState {
     /// key id -> (window start, count).
     pub rate: Arc<Mutex<HashMap<String, (std::time::Instant, u32)>>>,
     pub rate_limit_per_min: u32,
+    pub admin_rate_limit_per_min: u32,
 }
 
 impl AppState {
@@ -52,6 +55,7 @@ impl AppState {
             key_cache: Arc::default(),
             rate: Arc::default(),
             rate_limit_per_min: RATE_LIMIT_PER_MIN,
+            admin_rate_limit_per_min: ADMIN_RATE_LIMIT_PER_MIN,
         }
     }
 

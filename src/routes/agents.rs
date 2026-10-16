@@ -82,6 +82,11 @@ pub async fn revoke(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> ApiResult<Json<Value>> {
+    if id == crate::auth::ADMIN_AGENT_ID {
+        return Err(ApiError::bad_request(
+            "the built-in @admin agent cannot be revoked",
+        ));
+    }
     let res = sqlx::query("UPDATE agents SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
         .bind(now())
         .bind(&id)
