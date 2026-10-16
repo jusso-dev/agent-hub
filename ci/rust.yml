@@ -1,0 +1,17 @@
+# Proposed CI. Move to .github/workflows/rust.yml (the agent token cannot push workflow files).
+name: rust
+on:
+  push:
+    branches: [main, v0.1, "be/**"]
+  pull_request:
+jobs:
+  check:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo build --release --workspace
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
