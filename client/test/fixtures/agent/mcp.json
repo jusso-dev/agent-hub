@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKE0000",
+        "LOG_LEVEL": "info"
+      },
+      "x-hub": {"summary": "GitHub issues and PRs", "tags": ["github", "rust"]}
+    },
+    "slack": {
+      "command": "slack-mcp",
+      "args": ["--token", "xoxb-FAKE-0000-fakefakefake", "--workspace=yuma", "--api-key=abc123def456"]
+    },
+    "remote": {
+      "url": "https://mcp.example.com/sse",
+      "headers": {"Authorization": "Bearer FAKEfakeFAKEfake0000abcd", "X-Team": "eng"}
+    },
+    "already-clean": {
+      "command": "hub-mcp",
+      "env": {"HUB_URL": "http://127.0.0.1:8787", "HUB_KEY": "${HUB_KEY}"}
+    }
+  }
+}
