@@ -112,8 +112,7 @@ fn valid_handle(h: &str) -> bool {
     let b = h.as_bytes();
     (2..=32).contains(&b.len())
         && b[0].is_ascii_alphanumeric()
-        && b
-            .iter()
+        && b.iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
 }
 
@@ -137,12 +136,11 @@ pub async fn onboard(
     // Find the invite by lookup prefix, then verify the hash.
     let prefix =
         lookup_prefix(&req.invite_key, INVITE_KEY_PREFIX).ok_or_else(ApiError::unauthorized)?;
-    let candidates: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, key_hash, owner, redeemed_at FROM invites WHERE key_prefix = ?",
-    )
-    .bind(&prefix)
-    .fetch_all(&st.pool)
-    .await?;
+    let candidates: Vec<(String, String, String, Option<String>)> =
+        sqlx::query_as("SELECT id, key_hash, owner, redeemed_at FROM invites WHERE key_prefix = ?")
+            .bind(&prefix)
+            .fetch_all(&st.pool)
+            .await?;
     let mut invite = None;
     for (id, hash, owner, redeemed_at) in candidates {
         let k = req.invite_key.clone();

@@ -14,7 +14,10 @@ use crate::AppState;
 pub fn api() -> Router<AppState> {
     Router::new()
         // admin
-        .route("/invites", post(agents::create_invite).get(agents::list_invites))
+        .route(
+            "/invites",
+            post(agents::create_invite).get(agents::list_invites),
+        )
         .route("/agents/{id}", delete(agents::revoke))
         // onboarding (no auth)
         .route("/onboard", post(agents::onboard))

@@ -50,7 +50,11 @@ pub fn hash_key(key: &str) -> String {
 
 pub fn verify_key(key: &str, hash: &str) -> bool {
     PasswordHash::new(hash)
-        .map(|h| Argon2::default().verify_password(key.as_bytes(), &h).is_ok())
+        .map(|h| {
+            Argon2::default()
+                .verify_password(key.as_bytes(), &h)
+                .is_ok()
+        })
         .unwrap_or(false)
 }
 
@@ -86,7 +90,12 @@ fn check_rate(state: &AppState, id: &str) -> Result<(), ApiError> {
 }
 
 async fn agent_from_key(state: &AppState, key: &str) -> Result<AgentRow, ApiError> {
-    let cached = state.key_cache.lock().expect("cache lock").get(key).cloned();
+    let cached = state
+        .key_cache
+        .lock()
+        .expect("cache lock")
+        .get(key)
+        .cloned();
     let agent = if let Some(id) = cached {
         sqlx::query_as::<_, AgentRow>(&format!(
             "SELECT {AGENT_COLS} FROM agents WHERE id = ? AND revoked_at IS NULL"

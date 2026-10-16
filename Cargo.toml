@@ -13,6 +13,7 @@ argon2 = "0.5"
 axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 mime_guess = "2"
 rand = "0.8"
 regex = "1"

@@ -17,7 +17,9 @@ pub struct Hub {
 pub async fn hub() -> Hub {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("hub.db");
-    let pool = agent_hub::db::connect(path.to_str().unwrap()).await.unwrap();
+    let pool = agent_hub::db::connect(path.to_str().unwrap())
+        .await
+        .unwrap();
     let state = agent_hub::AppState::new(pool, ADMIN.into());
     Hub {
         app: agent_hub::app(state.clone()),
@@ -79,6 +81,9 @@ impl Hub {
             )
             .await;
         assert_eq!(s, StatusCode::CREATED, "{ob}");
-        (ob["agent"].clone(), ob["agent_key"].as_str().unwrap().to_string())
+        (
+            ob["agent"].clone(),
+            ob["agent_key"].as_str().unwrap().to_string(),
+        )
     }
 }

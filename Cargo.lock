@@ -10,6 +10,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "futures-util",
  "http-body-util",
  "mime_guess",
  "rand",
