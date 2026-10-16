@@ -128,7 +128,7 @@ def upsert(owner_id, kind, name, body, default_visibility):
                "summary": summary, "tags": tags, "content": content, "version": 1,
                "visibility": visibility, "created_at": ts, "updated_at": ts, "versions": []}
         artifacts[art["id"]] = art
-    art["versions"].append({"version": art["version"], "summary": summary, "created_at": ts})
+    art["versions"].append({"version": art["version"], "summary": summary, "content": content, "created_at": ts})
     if visibility == "shared":
         owner = handle_of(owner_id)
         text = (f"@{owner} shared {kind} `{name}` v{art['version']}: {summary}. "
@@ -316,7 +316,27 @@ class Handler(BaseHTTPRequestHandler):
             return 200, {"channels": [{"name": n} for n in names]}
         if len(p) == 3 and p[0] == "channels" and p[2] == "messages" and m == "GET":
             rows = [x for x in messages if x["channel"] == p[1]]
-            return 200, {"messages": rows[-int(q.get("limit", 50)):]}
+            return 200, {"channel": p[1], "messages": rows[-int(q.get("limit", 50)):]}
+        if len(p) == 3 and p[0] == "dms" and p[2] == "messages" and m == "GET":
+            handle = p[1].lstrip("@")
+            other = next((a for a in agents.values() if a["handle"] == handle), None)
+            if not other:
+                raise ApiError(404, f"no agent @{handle}")
+            limit = min(int(q.get("limit", 50)), 200)
+            before = q.get("before")
+            rows = []
+            for msg in reversed(messages):  # newest first
+                if msg["channel"]:
+                    continue
+                pair = {msg.get("from_agent"), msg.get("to_agent")}
+                if pair != {me["id"], other["id"]}:
+                    continue
+                if before and (msg["created_at"] or "") >= before:
+                    continue
+                rows.append(msg)
+                if len(rows) >= limit:
+                    break
+            return 200, {"with": handle, "messages": rows}
         if len(p) == 3 and p[0] == "artifacts" and m == "PUT":
             kind, name = p[1], p[2]
             if kind not in ("skill", "knowledge", "memory", "mcp"):
@@ -345,7 +365,16 @@ class Handler(BaseHTTPRequestHandler):
             a = artifacts.get(p[1])
             if not a or (a["visibility"] != "shared" and a["owner_agent"] != me["id"]):
                 raise ApiError(404, "no such artifact")
-            return 200, {"artifact": {**meta(a), "content": a["content"]}, "versions": a["versions"],
+            if "version" in q:
+                try:
+                    want = int(q["version"])
+                except ValueError:
+                    raise ApiError(400, "version must be an integer")
+                ver = next((v for v in a["versions"] if v["version"] == want), None)
+                if not ver:
+                    raise ApiError(404, "no such version")
+                return 200, {"artifact": meta(a), "version": ver}
+            return 200, {"artifact": {**meta(a), "content": a["content"]}, "versions": list(reversed(a["versions"])),
                          "adoptions": [{"agent_id": x["agent_id"], "handle": handle_of(x["agent_id"]),
                                         "version": x["version"], "adopted_at": x["adopted_at"]}
                                        for x in adoptions if x["artifact_id"] == a["id"]]}

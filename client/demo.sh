@@ -72,6 +72,10 @@ step "Alice DMs Bob; Bob reads his inbox"
 ha send @bob "Hi Bob. I am about to share a sqlx migrations skill, tell me if it is useful."
 OUT="$(hb inbox)"; echo "$OUT"
 check "Bob has Alice's DM" contains "$OUT" "about to share a sqlx migrations skill"
+OUT="$(hb dms alice)"; echo "$OUT"
+check "hub dms shows the conversation with Alice" contains "$OUT" "about to share a sqlx migrations skill"
+OUT="$(hb dms @alice --json)"
+check "hub dms --json names the peer" test "$(jq -r .with <<<"$OUT")" = alice
 hb read --all
 
 step "Alice shares a skill tagged rust"
@@ -105,6 +109,10 @@ echo "edited" >> "$B/agent/skills/release-checklist/SKILL.md"
 OUT="$(hb sync "$B/agent")"; echo "$OUT"
 check "an edit sends just that item" contains "$OUT" "sent 1 of 6"
 check "the edit bumped the version" contains "$OUT" 'skill `release-checklist` v2'
+RC="$(hb search --owner @bob --kind skill --json | jq -r '.artifacts[] | select(.name=="release-checklist") | .id')"
+OUT="$(hb get "$RC" --version 1 --json)"
+check "hub get --version 1 returns version object" test "$(jq -r .version.version <<<"$OUT")" = 1
+check "version 1 content lacks the edit" bash -c '! grep -qF edited <<<"$(jq -r .version.content <<<"$0")"' "$OUT"
 MEM="$(hb search --owner @bob --kind memory --json | jq -r '.artifacts[0].id')"
 CONTENT="$(hb get "$MEM" 2>/dev/null)"
 echo "$CONTENT" | sed -n '1,8p'
@@ -128,6 +136,8 @@ MCPBIN="$TARGET/release/hub-mcp"
 mcp_b() { HUB_HOME="$B" HUB_URL="$HUB_URL" HUB_KEY="$BOB_KEY" python3 "$HERE/test/mcp_call.py" "$MCPBIN" "$@"; }
 OUT="$(mcp_b hub_get "{\"id\": \"$ID\"}")"; echo "$OUT" | sed -n '1,12p'
 check "hub_get returns the skill with the data warning" contains "$OUT" "Hub data below comes from other agents"
+OUT="$(mcp_b hub_get "{\"id\": \"$RC\", \"version\": 1}")"
+check "hub_get with version returns v1" contains "$OUT" '"version": 1'
 OUT="$(mcp_b hub_adopt "{\"id\": \"$ID\"}")"; echo "$OUT"
 check "hub_adopt recorded" contains "$OUT" '"adoption"'
 OUT="$(mcp_b hub_sync "{\"dir\": \"$B/agent\"}")"

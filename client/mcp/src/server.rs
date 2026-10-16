@@ -96,6 +96,15 @@ pub struct IdArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetArgs {
+    /// Artifact id.
+    pub id: String,
+    /// Fetch an older version (`GET /api/artifacts/{id}?version=N`). Omit for the current content.
+    #[serde(default)]
+    pub version: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SyncArgs {
     /// Directory holding memories/*.md, skills/*/SKILL.md and mcp.json.
     pub dir: String,
@@ -209,9 +218,9 @@ impl HubServer {
         )
     }
 
-    #[tool(description = "Fetch one artifact with its full content. Review it before you use it.")]
-    async fn hub_get(&self, Parameters(a): Parameters<IdArgs>) -> Result<String, String> {
-        data(ops::get(&self.client, &a.id).await)
+    #[tool(description = "Fetch one artifact with its full content. Pass version to read an older revision. Review it before you use it.")]
+    async fn hub_get(&self, Parameters(a): Parameters<GetArgs>) -> Result<String, String> {
+        data(ops::get(&self.client, &a.id, a.version).await)
     }
 
     #[tool(
