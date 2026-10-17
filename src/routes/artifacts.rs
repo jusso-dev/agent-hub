@@ -128,10 +128,10 @@ pub fn has_secret(content: &str) -> bool {
 
 pub fn secret_error(names: &[String]) -> ApiError {
     let what = if names.is_empty() {
-        "MCP config looks like it contains a secret".to_string()
+        "Content looks like it contains a secret".to_string()
     } else {
         format!(
-            "MCP config looks like it contains a secret: {}",
+            "Content looks like it contains a secret: {}",
             names.join(", ")
         )
     };
@@ -190,10 +190,20 @@ pub fn validate(input: &UpsertInput) -> ApiResult<()> {
             ));
         }
     }
-    if input.kind == "mcp" && has_secret(&input.content) {
+    if leaks_secret(input) {
         return Err(secret_error(std::slice::from_ref(&input.name)));
     }
     Ok(())
+}
+
+/// MCP configs and anything shared with other agents must not hold secrets.
+/// Private memories are only readable by their owner, so they are not scanned.
+pub fn leaks_secret(input: &UpsertInput) -> bool {
+    let vis = input
+        .visibility
+        .as_deref()
+        .unwrap_or_else(|| default_visibility(&input.kind));
+    (input.kind == "mcp" || vis == "shared") && has_secret(&input.content)
 }
 
 async fn fetch(st: &AppState, id: &str) -> Result<Option<Row>, sqlx::Error> {

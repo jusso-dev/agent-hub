@@ -352,3 +352,63 @@ async fn revoked_agent_stream_closes() {
     let (s, _) = h.call(Method::GET, "/api/events", Some(&ka), None).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn shared_items_are_scanned_for_secrets() {
+    let h = hub().await;
+    let (_a, ka) = h.onboard("alice").await;
+    let leak = "Deploy with token ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+
+    // A shared skill (the default for skills) is refused.
+    let (s, r) = h
+        .call(
+            Method::PUT,
+            "/api/artifacts/skill/deploy",
+            Some(&ka),
+            Some(json!({"summary":"s","content":leak})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("deploy"), "{r}");
+
+    // A memory explicitly shared is refused too.
+    let (s, _) = h
+        .call(
+            Method::PUT,
+            "/api/artifacts/memory/note",
+            Some(&ka),
+            Some(json!({"summary":"s","content":leak,"visibility":"shared"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A private memory (the default) is allowed: only its owner can read it.
+    let (s, r) = h
+        .call(
+            Method::PUT,
+            "/api/artifacts/memory/note",
+            Some(&ka),
+            Some(json!({"summary":"s","content":leak})),
+        )
+        .await;
+    assert!(s.is_success(), "{s} {r}");
+
+    // A sync with one leaky shared memory writes nothing at all.
+    let (s, r) = h
+        .call(
+            Method::POST,
+            "/api/sync",
+            Some(&ka),
+            Some(json!({
+                "memories":[{"name":"leaky","summary":"s","content":leak,"visibility":"shared"}],
+                "skills":[{"name":"clean-skill","summary":"s","content":"no secrets here"}],
+                "mcps":[]
+            })),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{r}");
+    assert!(r["error"].as_str().unwrap().contains("leaky"), "{r}");
+    let (_, list) = h.call(Method::GET, "/api/artifacts", Some(&ka), None).await;
+    assert!(!list.to_string().contains("clean-skill"), "{list}");
+    assert!(list.to_string().contains("note"), "{list}");
+}
