@@ -1,0 +1,11 @@
+{
+  "name": "agent-hub-web-tests",
+  "private": true,
+  "description": "Unit tests for web/app.js. Run with: npm ci && npm test",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
