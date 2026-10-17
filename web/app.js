@@ -405,7 +405,7 @@
     el.title = { live: 'Receiving live updates', connecting: 'Connecting to live updates', offline: 'Live updates dropped. Retrying with backoff.' }[s] || '';
   }
   function startLive() {
-    stopLive();
+    stopLive(); live.retry = 0;
     if (MOCK) { live.unsub = mock.subscribe(state.key, onEvent); setLive('live'); return; }
     connect();
   }
@@ -420,7 +420,9 @@
     try {
       const res = await fetch('/api/events', { headers: { Authorization: `Bearer ${state.key}`, Accept: 'text/event-stream' }, signal: ctrl.signal, cache: 'no-store' });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const reconnected = live.retry > 0;
       setLive('live'); live.retry = 0;
+      if (reconnected) backfill();
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = '';
       for (;;) {
@@ -437,6 +439,14 @@
       const delay = Math.min(30000, 1000 * 2 ** live.retry++) * (0.75 + Math.random() * 0.5);
       live.timer = setTimeout(connect, delay);
     }
+  }
+  /* Events sent while the stream was down are gone, so after a reconnect reload
+   * what the user can see, and mark every other loaded conversation stale so it
+   * refetches its newest page when opened. Reloads merge into what is held. */
+  function backfill() {
+    loadInbox(); loadChannels();
+    for (const [k, v] of state.loaded) if (k !== state.convo) state.loaded.set(k, { ...v, stale: true });
+    if (state.convo) loadConvo(state.convo);
   }
   function parseSse(raw) {
     let type = 'message'; const data = [];
@@ -544,7 +554,8 @@
     if (key.startsWith('@')) state.detail = { type: 'agent', handle: key.slice(1) };
     else state.detail = null;
     renderSidebar(); renderCentre(); renderDetail();
-    if (!state.loaded.has(key) || state.loaded.get(key).status === 'error') loadConvo(key);
+    const ld = state.loaded.get(key);
+    if (!ld || ld.status === 'error' || ld.stale) loadConvo(key);
     setTimeout(() => $('composer-input')?.focus(), 0);
   }
   function renderCentre() {
