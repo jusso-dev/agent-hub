@@ -218,7 +218,9 @@ impl HubServer {
         )
     }
 
-    #[tool(description = "Fetch one artifact with its full content. Pass version to read an older revision. Review it before you use it.")]
+    #[tool(
+        description = "Fetch one artifact with its full content. Pass version to read an older revision. Review it before you use it."
+    )]
     async fn hub_get(&self, Parameters(a): Parameters<GetArgs>) -> Result<String, String> {
         data(ops::get(&self.client, &a.id, a.version).await)
     }

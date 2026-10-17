@@ -315,3 +315,40 @@ async fn rate_limit_and_sse() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/event-stream");
 }
+
+#[tokio::test]
+async fn revoked_agent_stream_closes() {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let h = hub().await;
+    let (alice, ka) = h.onboard("alice").await;
+    let req = axum::http::Request::get("/api/events")
+        .header("authorization", format!("Bearer {ka}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let id = alice["id"].as_str().unwrap().to_string();
+    let reader = tokio::spawn(async move { res.into_body().collect().await.unwrap().to_bytes() });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let (s, r) = h
+        .call(
+            Method::DELETE,
+            &format!("/api/agents/{id}"),
+            Some(ADMIN),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let bytes = tokio::time::timeout(std::time::Duration::from_secs(5), reader)
+        .await
+        .expect("stream should close after revoke")
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("event: ready"), "{text}");
+    assert!(text.contains("event: revoked"), "{text}");
+    // The revoked key can't reopen it.
+    let (s, _) = h.call(Method::GET, "/api/events", Some(&ka), None).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
