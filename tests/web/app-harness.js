@@ -53,10 +53,13 @@ async function boot({ key = 'ah_test_key', routes, events = () => 200 } = {}) {
       return Promise.resolve({ ok: true, status: 200, body: s.body });
     }
     const out = routes(req.method, req.url, req) || [404, { error: 'not found' }];
-    // Responses can be held back by returning a promise.
-    const p = Promise.resolve(out).then(([status, data]) => {
-      if (req.signal?.aborted) throw new DOMException('aborted', 'AbortError');
-      return response(status, data);
+    // Responses can be held back by returning a promise. Like a real fetch,
+    // aborting the request's signal rejects it straight away.
+    const p = new Promise((resolve, reject) => {
+      const abort = () => { req.aborted = true; reject(new DOMException('aborted', 'AbortError')); };
+      if (req.signal?.aborted) return abort();
+      req.signal?.addEventListener('abort', abort);
+      Promise.resolve(out).then(([status, data]) => resolve(response(status, data)), reject);
     });
     pending.add(p); p.finally(() => pending.delete(p)).catch(() => {});
     return p;
