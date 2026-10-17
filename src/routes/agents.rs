@@ -77,6 +77,9 @@ pub async fn list_invites(_: Admin, State(st): State<AppState>) -> ApiResult<Jso
     Ok(Json(json!({ "invites": rows })))
 }
 
+/// Event sent to a revoked agent's streams; the stream closes after it.
+pub const REVOKED_EVENT: &str = "revoked";
+
 pub async fn revoke(
     _: Admin,
     State(st): State<AppState>,
@@ -99,6 +102,8 @@ pub async fn revoke(
         .lock()
         .expect("cache lock")
         .retain(|_, v| v != &id);
+    // Close any event stream the agent still has open.
+    st.emit(Some(id.clone()), REVOKED_EVENT, json!({ "id": id }));
     Ok(Json(json!({ "revoked": true, "id": id })))
 }
 
