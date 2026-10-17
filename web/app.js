@@ -51,7 +51,11 @@
   const clear = (el, ...kids) => { el.replaceChildren(); return add(el, kids); };
 
   /* ---------- Safe markdown (tiny subset) ---------- */
-  const INLINE = /(`+)([^`\n]+?)\1|\*\*([^*\n]+?)\*\*|\[([^\]\n]+)\]\(([^)\s]+)\)|(https?:\/\/[^\s<>()]*[^\s<>().,;:!?'"])/g;
+  /* Every token is bounded and none can rescan text it has already passed, so the
+   * cost of a line is linear in its length. Unbounded versions of these patterns
+   * were quadratic: one 250k "[" message froze the page for over a minute. */
+  const INLINE = /(`{1,3})([^`\n]{1,1000}?)\1|\*\*([^*\n]{1,1000}?)\*\*|\[([^[\]\n]{1,300})\]\(([^()\s]{1,2048})\)|(https?:\/\/[^\s<>()]{0,2048}[^\s<>().,;:!?'"])/g;
+  const PLAIN_LINE = 4000; // longer lines are shown as plain text, never parsed
   function safeLink(href, label) {
     let u;
     try { u = new URL(href); } catch { return null; }
@@ -59,6 +63,7 @@
     return h('a', { href: u.href, target: '_blank', rel: 'noopener noreferrer nofollow' }, label);
   }
   function inline(parent, s) {
+    if (s.length > PLAIN_LINE) { parent.append(document.createTextNode(s)); return; }
     let last = 0;
     for (const m of s.matchAll(INLINE)) {
       if (m.index > last) parent.append(document.createTextNode(s.slice(last, m.index)));
@@ -95,6 +100,23 @@
     }
     flush();
     return root;
+  }
+  /* Rendered output is cached per message id and body, so re-rendering a
+   * conversation on each live event clones nodes instead of parsing again. */
+  const MD_CACHE_MAX = 2000;
+  const mdCache = new Map();
+  function markdownFor(id, src) {
+    if (id == null) return markdown(src);
+    const body = String(src ?? '');
+    const key = String(id);
+    let hit = mdCache.get(key);
+    if (hit && hit.body === body) { mdCache.delete(key); mdCache.set(key, hit); }
+    else {
+      hit = { body, node: markdown(body) };
+      mdCache.delete(key); mdCache.set(key, hit);
+      if (mdCache.size > MD_CACHE_MAX) mdCache.delete(mdCache.keys().next().value);
+    }
+    return hit.node.cloneNode(true);
   }
 
   /* ---------- Formatting ---------- */
@@ -604,7 +626,7 @@
   const KIND_LABEL = { share: 'Shared', ask: 'Ask', system: 'System' };
   function messageRow(m, compact) {
     const kindTag = m.kind !== 'chat' ? badge(KIND_LABEL[m.kind] || m.kind, `msg-kind msg-kind-${m.kind}`) : null;
-    const body = h('div', { class: 'msg-body' }, markdown(m.body));
+    const body = h('div', { class: 'msg-body' }, markdownFor(m.id, m.body));
     if (m.artifactId != null) body.append(h('button', { class: 'chip-btn', type: 'button', onclick: () => showDetail({ type: 'artifact', id: m.artifactId }) }, 'Open artifact'));
     if (compact) return h('div', { class: `msg compact kind-${m.kind}` }, h('span', { class: 'msg-gutter', title: fmtDateTime(m.createdAt) }, fmtTime(m.createdAt)), body);
     return h('div', { class: `msg kind-${m.kind}` },
@@ -664,7 +686,7 @@
           m.kind !== 'chat' ? badge(KIND_LABEL[m.kind] || m.kind, `msg-kind msg-kind-${m.kind}`) : null,
           h('span', { class: 'grow' }),
           h('time', { class: 'msg-time', datetime: m.createdAt, title: fmtDateTime(m.createdAt) }, rel(m.createdAt))),
-        h('div', { class: 'msg-body clamp' }, markdown(m.body)),
+        h('div', { class: 'msg-body clamp' }, markdownFor(m.id, m.body)),
         h('div', { class: 'row gap-sm actions' },
           unread ? h('button', { class: 'btn subtle sm', type: 'button', dataset: { markRead: String(m.id) }, onclick: () => markRead([m.id]) }, 'Mark as read') : null,
           h('button', { class: 'btn ghost sm', type: 'button', onclick: open }, m.channel ? `Open #${m.channel}` : 'Reply'),
@@ -1013,7 +1035,7 @@
     presenceTimer = setInterval(() => { if (state.tab === 'chat' || state.tab === 'inbox') renderSidebar(); }, 60000);
   }
   function signOut() {
-    stopLive(); clearInterval(presenceTimer);
+    stopLive(); clearInterval(presenceTimer); mdCache.clear();
     localStorage.removeItem(LS_KEY);
     Object.assign(state, {
       key: '', admin: false, adminSelf: false, me: null, agents: [], agentsById: new Map(), agentsByHandle: new Map(), channels: [], convo: null,
