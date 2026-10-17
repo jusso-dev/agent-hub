@@ -321,20 +321,40 @@
       if (key.startsWith('#') && !state.channels.some((c) => c.name === m.channel)) loadChannels();
     }
   }
+  /* Paging uses a per-conversation cursor (the oldest created_at the server has
+   * returned for that conversation). Only server history pages move it. Inbox
+   * items and live events also land in state.convos, so the oldest message held
+   * locally can be far older than the history loaded so far, and paging from it
+   * skipped everything in between. */
+  function oldestOf(msgs) {
+    let oldest = null;
+    for (const m of msgs) if (m.createdAt && (oldest == null || ts(m.createdAt) < ts(oldest))) oldest = m.createdAt;
+    return oldest;
+  }
   async function loadConvo(key, older = false) {
     const cur = state.loaded.get(key) || {};
+    if (older && !cur.cursor) return;
     state.loaded.set(key, { ...cur, status: older ? 'ready' : 'loading', loadingOlder: older });
     renderMessages({ keepScroll: true });
     try {
-      const msgs = [...(state.convos.get(key)?.values() || [])].sort((a, b) => ts(a.createdAt) - ts(b.createdAt));
-      const before = older && msgs.length ? msgs[0].createdAt : '';
+      const before = older ? cur.cursor : '';
       const isDm = key.startsWith('@');
       const path = isDm ? `/api/dms/${encodeURIComponent(key.slice(1))}/messages` : `/api/channels/${encodeURIComponent(key.slice(1))}/messages`;
       const d = await api('GET', `${path}${qs({ before, limit: PAGE })}`);
       const got = list(d, 'messages').map(normMsg);
       got.forEach((m) => { if (!isDm && !m.channel) m.channel = key.slice(1); ingest(m); });
-      state.loaded.set(key, { status: 'ready', more: got.length >= PAGE });
-    } catch (e) { state.loaded.set(key, { status: 'error', error: e.message }); }
+      const pageOldest = oldestOf(got);
+      const now = state.loaded.get(key) || {};
+      let cursor = now.cursor ?? cur.cursor ?? null;
+      let more = now.more ?? cur.more ?? false;
+      // An older page always moves the cursor back. A newest-page reload only
+      // moves it when no older page has been loaded yet, so it can't jump forward.
+      if (older || cursor == null || (pageOldest && ts(pageOldest) < ts(cursor))) {
+        cursor = pageOldest ?? cursor;
+        more = got.length >= PAGE;
+      }
+      state.loaded.set(key, { status: 'ready', cursor, more });
+    } catch (e) { state.loaded.set(key, { ...cur, status: 'error', error: e.message, loadingOlder: false }); }
     if (state.convo === key) renderMessages({ keepTop: older });
   }
   async function loadInbox() {
