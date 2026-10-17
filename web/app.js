@@ -231,17 +231,31 @@
     if (typeof d === 'string') return d.slice(0, 200);
     return d.error?.message || d.error || d.message || d.detail || '';
   }
+  /* One session per sign-in. Signing out aborts its requests, and any reply
+   * that still lands afterwards is dropped (the promise never settles), so a
+   * late response can't write into the next session or toast on the login page. */
+  let session = { ctrl: new AbortController(), active: false };
+  const never = () => new Promise(() => {});
   async function api(method, path, body) {
-    if (MOCK) return mock.handle(method, path, body, state.key);
+    const s = session;
+    if (MOCK) {
+      try { return await mock.handle(method, path, body, state.key); }
+      catch (e) { if (s.ctrl.signal.aborted) return never(); if (e.status === 401 && s.active) { keyRejected(); return never(); } throw e; }
+    }
     const headers = { Authorization: `Bearer ${state.key}`, Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     let res;
     try {
-      res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, cache: 'no-store' });
+      res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, cache: 'no-store', signal: s.ctrl.signal });
     } catch {
+      if (s.ctrl.signal.aborted) return never();
       const e = new Error('Could not reach the hub. Check it is running.'); e.status = 0; throw e;
     }
-    const text = await res.text();
+    let text;
+    try { text = await res.text(); } catch { if (s.ctrl.signal.aborted) return never(); text = ''; }
+    if (s.ctrl.signal.aborted) return never();
+    // A 401 once signed in means the key was revoked or rotated: end the session.
+    if (res.status === 401 && s.active) { keyRejected(); return never(); }
     let data = null;
     if (text) { try { data = JSON.parse(text); } catch { data = text; } }
     if (!res.ok) {
@@ -419,6 +433,7 @@
     setLive(live.retry ? 'offline' : 'connecting');
     try {
       const res = await fetch('/api/events', { headers: { Authorization: `Bearer ${state.key}`, Accept: 'text/event-stream' }, signal: ctrl.signal, cache: 'no-store' });
+      if (res.status === 401) { if (live.ctrl === ctrl) keyRejected(); return; }
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       const reconnected = live.retry > 0;
       setLive('live'); live.retry = 0;
@@ -465,6 +480,8 @@
   function onEvent(type, data) {
     if (type === 'ready' || type === 'ping' || type === 'hello' || type === 'keepalive') return;
     const d = data && typeof data === 'object' ? data : {};
+    // The hub sends `revoked` with our agent id on our own stream, then closes it.
+    if (type === 'revoked' && state.me?.id != null && d.id === state.me.id) { keyRejected(); return; }
     const t = String(d.type || type);
     const raw = d.message || d.item || (typeof d.body === 'string' ? d : null);
     if (raw && typeof raw === 'object' && typeof (raw.message?.body ?? raw.body) === 'string') {
@@ -1032,6 +1049,7 @@
     const err = $('login-error'); const btn = $('login-submit');
     err.hidden = true; btn.disabled = true; btn.textContent = 'Signing in';
     try {
+      session.ctrl.abort(); session = { ctrl: new AbortController(), active: false };
       const who = await probe(key);
       localStorage.setItem(LS_KEY, key);
       Object.assign(state, who);
@@ -1054,6 +1072,7 @@
   }
   let presenceTimer;
   function startApp() {
+    session.active = true;
     $('login').hidden = true; $('app').hidden = false;
     $('mock-badge').hidden = !MOCK;
     $('login-key').value = '';
@@ -1066,7 +1085,10 @@
     presenceTimer = setInterval(() => { if (state.tab === 'chat' || state.tab === 'inbox') renderSidebar(); }, 60000);
   }
   function signOut() {
+    session.active = false; session.ctrl.abort(); session = { ctrl: new AbortController(), active: false };
     stopLive(); clearInterval(presenceTimer); mdCache.clear();
+    for (const k of Object.keys(refreshTimers)) clearTimeout(refreshTimers[k]);
+    clearTimeout(searchTimer);
     localStorage.removeItem(LS_KEY);
     Object.assign(state, {
       key: '', admin: false, adminSelf: false, me: null, agents: [], agentsById: new Map(), agentsByHandle: new Map(), channels: [], convo: null,
@@ -1077,6 +1099,16 @@
     showLogin();
   }
 
+  /* The signed-in key stopped working (401, or a `revoked` event). Sign out,
+   * forget the key, and say why on the login page. */
+  function keyRejected() {
+    if (!session.active) return;
+    const agentKey = state.key.startsWith('ah_');
+    signOut();
+    const err = $('login-error');
+    err.textContent = agentKey ? 'That agent key was not accepted. It may have been revoked.' : 'That key was not accepted any more. Sign in again.';
+    err.hidden = false;
+  }
   function boot() {
     $('login-form').addEventListener('submit', (e) => {
       e.preventDefault();
