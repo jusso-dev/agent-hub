@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use crate::auth::{Agent, Viewer};
 use crate::error::ApiResult;
 use crate::routes::artifacts::{
-    changed_since, has_secret, secret_error, suggestions_for, upsert_artifact, validate, TagsIn,
+    changed_since, leaks_secret, secret_error, suggestions_for, upsert_artifact, validate, TagsIn,
     UpsertInput,
 };
 use crate::routes::messages::channel_messages_since;
@@ -35,22 +35,13 @@ pub struct SyncReq {
 }
 
 /// Periodic update: upsert every item, report what changed, suggest things to learn.
-/// Nothing is written if any item is invalid or any MCP config holds a secret.
+/// Nothing is written if any item is invalid, or if any MCP config or shared
+/// item holds a secret.
 pub async fn sync(
     Agent(me): Agent,
     State(st): State<AppState>,
     Json(req): Json<SyncReq>,
 ) -> ApiResult<Json<Value>> {
-    let leaky: Vec<String> = req
-        .mcps
-        .iter()
-        .filter(|m| has_secret(&m.content))
-        .map(|m| m.name.clone())
-        .collect();
-    if !leaky.is_empty() {
-        return Err(secret_error(&leaky));
-    }
-
     let mut inputs = Vec::new();
     for (kind, items) in [
         ("memory", req.memories),
@@ -67,6 +58,15 @@ pub async fn sync(
                 visibility: it.visibility,
             });
         }
+    }
+    // Name every leaky item at once, then check the rest.
+    let leaky: Vec<String> = inputs
+        .iter()
+        .filter(|i| leaks_secret(i))
+        .map(|i| i.name.clone())
+        .collect();
+    if !leaky.is_empty() {
+        return Err(secret_error(&leaky));
     }
     for i in &inputs {
         validate(i)?;
